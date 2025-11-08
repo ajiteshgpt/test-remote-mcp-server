@@ -1,53 +1,81 @@
 from fastmcp import FastMCP
-import random
-import json
+import os
+import sqlite3
 
-#creating the fastmcp instance 
-mcp = FastMCP("simple calculator server")
+DB_PATH = os.path.join(os.path.dirname(__file__), "expenses.db")
+CATEGORIES_PATH = os.path.join(os.path.dirname(__file__), "categories.json")
 
-# adding of two numbers 
-@mcp.tool()
-def add(a: int, b: int) -> int:
-    """ Add two numbers together 
+mcp = FastMCP("ExpenseTracker")
 
-    args : 
-    a : 1st number 
-    b : 2nd number 
+def init_db():
+    with sqlite3.connect(DB_PATH) as c:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS expenses(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                amount REAL NOT NULL,
+                category TEXT NOT NULL,
+                subcategory TEXT DEFAULT '',
+                note TEXT DEFAULT ''
+            )
+        """)
 
-    returns :
-    the sum of a and b
-    """
-    return a + b
+init_db()
 
-@mcp.tool()
-def random_number(min_val: int = 1, max_val: int = 100) -> int:
-    """    generate a random number 
+@mcp.tool()  # to add the expenses 
+def add_expense(date, amount, category, subcategory="", note=""):
+    '''Add a new expense entry to the database.'''
+    with sqlite3.connect(DB_PATH) as c:
+        cur = c.execute(
+            "INSERT INTO expenses(date, amount, category, subcategory, note) VALUES (?,?,?,?,?)",
+            (date, amount, category, subcategory, note)
+        )
+        return {"status": "ok", "id": cur.lastrowid}
+    
+@mcp.tool()  # to list the expenses i have made 
+def list_expenses(start_date, end_date):
+    '''List expense entries within an inclusive date range.'''
+    with sqlite3.connect(DB_PATH) as c:
+        cur = c.execute(
+            """
+            SELECT id, date, amount, category, subcategory, note
+            FROM expenses
+            WHERE date BETWEEN ? AND ?
+            ORDER BY id ASC
+            """,
+            (start_date, end_date)
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
 
-    min value : minimum value default 1
-    max_value : maximum value defaut 100
+@mcp.tool()  # o summerize  stuffs 
+def summarize(start_date, end_date, category=None):
+    '''Summarize expenses by category within an inclusive date range.'''
+    with sqlite3.connect(DB_PATH) as c:
+        query = (
+            """
+            SELECT category, SUM(amount) AS total_amount
+            FROM expenses
+            WHERE date BETWEEN ? AND ?
+            """
+        )
+        params = [start_date, end_date]
 
-    return :
-    return a random number bw them 
-    """
-    return random.randint(min_val, max_val)
+        if category:
+            query += " AND category = ?"
+            params.append(category)
 
-#resourse inetialization 
-@mcp.resource("info://server")
-def server_info() -> str:
-    """"  get info about the server   """
-    info = {
-        "name": "Simple Calculator Server",
-        "version": "1.0.0",
-        "description": "a basic mcp server with math tools",
-        "tools": ["add", "random_integer"],
-        "author": "Ajitesh"
-    }
-    return json.dumps(info, indent=2)
+        query += " GROUP BY category ORDER BY category ASC"
 
-# optional: simple health check for inspector connection
-@mcp.resource("health://check")
-def health_check() -> str:
-    return "Server is running"
+        cur = c.execute(query, params)
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+@mcp.resource("expense://categories", mime_type="application/json")  ## to use resorses given to mcp 
+def categories():
+    # Read fresh each time so you can edit the file without restarting
+    with open(CATEGORIES_PATH, "r", encoding="utf-8") as f:
+        return f.read()
 
 #startig server 
 if __name__ == "__main__":
